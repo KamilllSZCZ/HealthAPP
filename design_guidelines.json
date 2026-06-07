@@ -1,0 +1,107 @@
+{
+  "app_name": "LifeSync",
+  "theme": "dark",
+  "archetype": "Performance Pro / Luxury Hybrid",
+  "colors": {
+    "background": "#111111",
+    "surface": "#1A1A1A",
+    "surface_hover": "#27272A",
+    "accent": "#6B46FF",
+    "accent_glow": "rgba(107, 70, 255, 0.3)",
+    "success": "#22C55E",
+    "warning": "#F59E0B",
+    "danger": "#EF4444",
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "tertiary": "#71717A"
+    },
+    "border": "#27272A"
+  },
+  "typography": {
+    "font_families": {
+      "heading": "Manrope",
+      "body": "Chivo"
+    },
+    "scale": {
+      "h1": "text-4xl tracking-tighter font-bold",
+      "h2": "text-2xl tracking-tight font-semibold",
+      "h3": "text-xl tracking-tight font-semibold",
+      "body_large": "text-lg font-normal",
+      "body": "text-base font-normal",
+      "body_small": "text-sm font-medium text-[#A1A1AA]",
+      "label": "text-xs font-bold uppercase tracking-[0.2em] text-[#71717A]"
+    }
+  },
+  "layout_and_spacing": {
+    "dashboard_grid": {
+      "mobile": "1 column flex-col gap-4",
+      "tablet": "2 columns grid gap-4",
+      "desktop": "3-4 columns bento-box grid gap-6",
+      "internal_padding": "p-5"
+    },
+    "screen_padding": "px-4 pt-6 pb-24",
+    "border_radius": {
+      "card": "rounded-3xl",
+      "button": "rounded-full",
+      "input": "rounded-2xl",
+      "widget_inner": "rounded-2xl"
+    }
+  },
+  "components": {
+    "card": {
+      "background": "bg-[#1A1A1A]",
+      "border": "border border-[#27272A]",
+      "shadow": "none",
+      "style": "Flat, OLED-friendly, sharp inner contrast"
+    },
+    "tab_bar": {
+      "style": "Crystal Glassmorphism",
+      "background": "bg-[#111111]/80",
+      "blur": "backdrop-blur-2xl",
+      "border": "border-t border-[#27272A]",
+      "active_icon": "text-[#6B46FF]",
+      "inactive_icon": "text-[#71717A]"
+    },
+    "progress_ring": {
+      "track_color": "#27272A",
+      "fill_color": "#6B46FF",
+      "stroke_width": 8,
+      "stroke_linecap": "round",
+      "shadow": "drop-shadow(0 0 12px rgba(107, 70, 255, 0.4))"
+    },
+    "charts": {
+      "style": "Minimalist, no grid lines, thin axes",
+      "line_stroke": 3,
+      "line_color": "#6B46FF",
+      "area_fill": "url(#colorAccent)",
+      "tooltip": "bg-[#111111] border border-[#27272A] rounded-xl p-3"
+    },
+    "button": {
+      "primary": "bg-[#6B46FF] text-white rounded-full py-4 px-6 font-semibold tracking-wide",
+      "secondary": "bg-[#1A1A1A] border border-[#27272A] text-white rounded-full py-4 px-6 font-medium"
+    },
+    "input": {
+      "style": "bg-[#111111] border border-[#27272A] rounded-2xl px-5 py-4 text-white"
+    }
+  },
+  "micro_interactions": {
+    "press_state": "active:scale-[0.98] opacity-90 transition-all duration-200 ease-out",
+    "skeleton_loading": "animate-pulse bg-[#27272A] rounded-xl"
+  },
+  "testing": {
+    "attributes": "All interactive elements MUST include data-testid. Use kebab-case, role-based. Example: data-testid='dashboard-add-water-button'"
+  },
+  "media": {
+    "avatar_placeholder": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2OTV8MHwxfHNlYXJjaHwxfHxhdmF0YXIlMjBwb3J0cmFpdCUyMGRhcmt8ZW58MHx8fHwxNzgwODQxMTY5fDA&ixlib=rb-4.1.0&q=85",
+    "abstract_background": "https://images.unsplash.com/photo-1651870364199-fc5f9f46ac85?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1NTZ8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMHB1cnBsZSUyMG5lb24lMjBwYXR0ZXJufGVufDB8fHx8MTc4MDg0MTE2OXww&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": [
+    "Ensure the background is #111111 globally to save battery on OLED screens.",
+    "Use Manrope for headings/numbers and Chivo for body text. Install via @expo-google-fonts/manrope and @expo-google-fonts/chivo.",
+    "Build the dashboard using a bento-grid approach. Use generous padding inside widgets (p-5) but keep gaps tight (gap-4).",
+    "Avoid box-shadows. Rely on 1px borders (#27272A) to define hierarchy.",
+    "Progress rings should have a subtle drop shadow on the active stroke to create a neon tracing beam effect.",
+    "Always add data-testid attributes to touchable elements."
+  ]
+}
