@@ -1,26 +1,43 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, Pill, EmptyState } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, Pill, EmptyState, Loader, ErrorState } from "@/src/components/ui";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage } from "@/src/utils/validate";
 
 const TYPES = ["Garage", "Vehicle", "Business", "Personal"];
 
 export default function Projects() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [projects, setProjects] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [detail, setDetail] = useState<any>(null);
   const [form, setForm] = useState<any>({ name: "", description: "", type: "Personal", deadline: "", status: "active" });
   const [taskText, setTaskText] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => { setProjects(await api("/projects")); }, []);
+  const load = useCallback(async () => {
+    try {
+      setError(false);
+      setProjects(await api("/projects"));
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const progress = (p: any) => {
     const tasks = p.tasks || [];
@@ -29,22 +46,31 @@ export default function Projects() {
   };
 
   const create = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) { toast.error("Project name is required."); return; }
     setSaving(true);
     try {
       await api("/projects", { method: "POST", body: { ...form, tasks: [], notes: "" } });
+      toast.success("Project created.");
       setSheet(false); setForm({ name: "", description: "", type: "Personal", deadline: "", status: "active" }); load();
-    } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't create project."));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveDetail = async (updated: any) => {
-    await api(`/projects/${updated.id}`, { method: "PUT", body: { tasks: updated.tasks, notes: updated.notes, status: updated.status } });
-    setDetail(updated);
-    load();
+    try {
+      await api(`/projects/${updated.id}`, { method: "PUT", body: { tasks: updated.tasks, notes: updated.notes, status: updated.status } });
+      setDetail(updated);
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't update project."));
+    }
   };
 
   const addTask = () => {
-    if (!taskText.trim() || !detail) return;
+    if (!taskText.trim() || !detail) { toast.error("Enter a task first."); return; }
     const updated = { ...detail, tasks: [...(detail.tasks || []), { id: Date.now().toString(), title: taskText, done: false }] };
     setTaskText("");
     saveDetail(updated);
@@ -55,15 +81,28 @@ export default function Projects() {
     saveDetail(updated);
   };
 
-  const removeProject = (id: string) => {
-    const doIt = async () => { await api(`/projects/${id}`, { method: "DELETE" }); setDetail(null); load(); };
-    if (Platform.OS === "web") doIt();
-    else Alert.alert("Delete project?", "", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: doIt }]);
+  const removeProject = async (id: string) => {
+    const ok = await confirmAsync("Delete project?", "This project and all its tasks will be permanently removed.");
+    if (!ok) return;
+    try {
+      await api(`/projects/${id}`, { method: "DELETE" });
+      toast.success("Project deleted.");
+      setDetail(null); load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't delete project."));
+    }
   };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+      >
         <ScreenHeader title="Projects" onBack={() => router.back()} right={<IconButton icon="add" bg={colors.warning} color="#fff" onPress={() => setSheet(true)} testID="add-project-btn" />} />
 
         {projects.length === 0 ? (
@@ -94,7 +133,6 @@ export default function Projects() {
         )}
       </ScrollView>
 
-      {/* New project */}
       <Sheet visible={sheet} onClose={() => setSheet(false)} title="New Project">
         <Field label="Project Name" placeholder="Restore the motorbike" value={form.name} onChangeText={(v: string) => setForm({ ...form, name: v })} testID="project-name" />
         <Field label="Description" placeholder="Short description" value={form.description} onChangeText={(v: string) => setForm({ ...form, description: v })} multiline />
@@ -106,7 +144,6 @@ export default function Projects() {
         <Button title="Create Project" onPress={create} loading={saving} testID="save-project-btn" />
       </Sheet>
 
-      {/* Detail */}
       <Sheet visible={!!detail} onClose={() => setDetail(null)} title={detail?.name || "Project"}>
         {detail && (
           <>
@@ -122,7 +159,7 @@ export default function Projects() {
               <View style={{ flex: 1 }}><Field placeholder="Add a task..." value={taskText} onChangeText={setTaskText} testID="task-input" /></View>
               <TouchableOpacity onPress={addTask} style={styles.addTaskBtn} testID="add-task-btn"><Ionicons name="add" size={22} color="#fff" /></TouchableOpacity>
             </View>
-            <Button title="Delete Project" variant="ghost" onPress={() => removeProject(detail.id)} style={{ marginTop: 8 }} />
+            <Button title="Delete Project" variant="ghost" onPress={() => removeProject(detail.id)} style={{ marginTop: 8 }} testID="delete-project-btn" />
           </>
         )}
       </Sheet>

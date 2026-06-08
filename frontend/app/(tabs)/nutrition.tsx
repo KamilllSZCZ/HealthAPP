@@ -1,12 +1,15 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
-import { AppText, Card, Button, Field, Sheet, Pill, EmptyState, IconButton, SectionTitle } from "@/src/components/ui";
+import { AppText, Card, Button, Field, Sheet, Pill, EmptyState, IconButton, SectionTitle, Loader, ErrorState } from "@/src/components/ui";
 import { Ring } from "@/src/components/charts";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage, isNonNegativeNumber } from "@/src/utils/validate";
 
 const CATS = ["Breakfast", "Lunch", "Dinner", "Snack"];
 const CAT_ICON: Record<string, string> = { Breakfast: "cafe", Lunch: "fast-food", Dinner: "restaurant", Snack: "nutrition" };
@@ -15,8 +18,11 @@ const emptyMeal = { name: "", category: "Breakfast", calories: "", protein: "", 
 export default function Nutrition() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
+  const toast = useToast();
   const [data, setData] = useState<any>({ meals: [], totals: {} });
   const [templates, setTemplates] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [form, setForm] = useState<any>(emptyMeal);
@@ -25,10 +31,15 @@ export default function Nutrition() {
 
   const load = useCallback(async () => {
     try {
+      setError(false);
       const [today, tmpl] = await Promise.all([api("/meals/today"), api("/meal-templates")]);
       setData(today);
       setTemplates(tmpl);
-    } catch (e) { console.warn(e); }
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
@@ -37,7 +48,12 @@ export default function Nutrition() {
   const openNew = (cat?: string) => { setForm({ ...emptyMeal, category: cat || "Breakfast" }); setSaveAsTemplate(false); setSheet(true); };
 
   const save = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) { toast.error("Meal name is required."); return; }
+    for (const [k, label] of [["calories", "Calories"], ["protein", "Protein"], ["carbs", "Carbs"], ["fat", "Fat"], ["fiber", "Fiber"]] as const) {
+      if (form[k] !== "" && form[k] != null && !isNonNegativeNumber(form[k])) {
+        toast.error(`${label} must be a valid non-negative number.`); return;
+      }
+    }
     setSaving(true);
     const payload = {
       name: form.name, category: form.category,
@@ -47,20 +63,43 @@ export default function Nutrition() {
     try {
       await api("/meals", { method: "POST", body: payload });
       if (saveAsTemplate) await api("/meal-templates", { method: "POST", body: payload });
+      toast.success("Meal logged.");
       setSheet(false);
       load();
-    } catch (e: any) { Alert.alert("Error", e.message); } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't log meal."));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const addFromTemplate = async (t: any) => {
-    await api("/meals", { method: "POST", body: {
-      name: t.name, category: t.category || "Snack",
-      calories: t.calories, protein: t.protein, carbs: t.carbs, fat: t.fat, fiber: t.fiber,
-    }});
-    load();
+    try {
+      await api("/meals", { method: "POST", body: {
+        name: t.name, category: t.category || "Snack",
+        calories: t.calories, protein: t.protein, carbs: t.carbs, fat: t.fat, fiber: t.fiber,
+      }});
+      toast.success("Meal added.");
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't add meal."));
+    }
   };
 
-  const removeMeal = async (id: string) => { await api(`/meals/${id}`, { method: "DELETE" }); load(); };
+  const removeMeal = async (id: string) => {
+    const ok = await confirmAsync("Remove meal?", "This meal will be removed from today's log.");
+    if (!ok) return;
+    try {
+      await api(`/meals/${id}`, { method: "DELETE" });
+      toast.success("Meal removed.");
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't remove meal."));
+    }
+  };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} />;
 
   const t = data.totals || {};
   const calGoal = 2200;
@@ -79,7 +118,6 @@ export default function Nutrition() {
           <IconButton icon="add" bg={colors.success} color="#fff" onPress={() => openNew()} testID="add-meal-btn" />
         </View>
 
-        {/* Macro summary */}
         <Card style={styles.summary} testID="nutrition-summary">
           <Ring size={96} stroke={9} progress={(t.calories || 0) / calGoal} color={colors.success}>
             <View style={{ alignItems: "center" }}>
@@ -104,7 +142,6 @@ export default function Nutrition() {
           </View>
         </Card>
 
-        {/* Quick add chips */}
         <View style={styles.quickRow}>
           {CATS.map((c) => (
             <TouchableOpacity key={c} style={styles.quickChip} onPress={() => openNew(c)} testID={`quick-meal-${c}`}>
@@ -114,7 +151,6 @@ export default function Nutrition() {
           ))}
         </View>
 
-        {/* Saved meals */}
         {templates.length > 0 && (
           <>
             <SectionTitle title="Saved Meals" />
@@ -132,7 +168,6 @@ export default function Nutrition() {
           </>
         )}
 
-        {/* Today's meals grouped */}
         <SectionTitle title="Today's Log" />
         {(data.meals || []).length === 0 ? (
           <EmptyState icon="restaurant-outline" title="Nothing logged yet" subtitle="Quick-add a meal above to start tracking calories and macros." />
@@ -148,7 +183,7 @@ export default function Nutrition() {
                       {Math.round(m.calories)} kcal · P{Math.round(m.protein)} C{Math.round(m.carbs)} F{Math.round(m.fat)}
                     </AppText>
                   </View>
-                  <TouchableOpacity onPress={() => removeMeal(m.id)} testID={`delete-meal-${m.id}`}>
+                  <TouchableOpacity onPress={() => removeMeal(m.id)} style={styles.delBtn} testID={`delete-meal-${m.id}`}>
                     <Ionicons name="trash-outline" size={18} color={colors.textTertiary} />
                   </TouchableOpacity>
                 </Card>
@@ -196,6 +231,7 @@ const styles = StyleSheet.create({
   tmplAdd: { position: "absolute", top: 10, right: 10, width: 22, height: 22, borderRadius: 11, backgroundColor: colors.successSoft, alignItems: "center", justifyContent: "center" },
   groupLabel: { fontSize: 11, letterSpacing: 1.5, color: colors.textTertiary, marginBottom: 6, marginLeft: 4 },
   mealItem: { flexDirection: "row", alignItems: "center", marginBottom: 8, paddingVertical: 12 },
+  delBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   lbl: { fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: colors.textTertiary, marginBottom: 8 },
   two: { flexDirection: "row", gap: 12 },
   toggle: { flexDirection: "row", alignItems: "center", marginBottom: 16, marginTop: 4 },

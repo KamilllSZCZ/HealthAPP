@@ -186,6 +186,29 @@ export function EmptyState({ icon, title, subtitle }: { icon: any; title: string
   );
 }
 
+export function Loader({ label }: { label?: string }) {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg }} testID="screen-loader">
+      <ActivityIndicator color={colors.accent} size="large" />
+      {label ? <AppText style={{ color: colors.textTertiary, marginTop: 12 }}>{label}</AppText> : null}
+    </View>
+  );
+}
+
+export function ErrorState({ onRetry, onBack, message }: { onRetry: () => void; onBack?: () => void; message?: string }) {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg, padding: 32 }} testID="screen-error">
+      <Ionicons name="cloud-offline-outline" size={42} color={colors.textTertiary} />
+      <AppText weight="headingSemi" style={{ fontSize: 16, marginTop: 14 }}>Couldn't load</AppText>
+      <AppText style={{ color: colors.textTertiary, fontSize: 13, marginTop: 4, textAlign: "center" }}>
+        {message || "Something went wrong while loading your data. Check your connection and try again."}
+      </AppText>
+      <Button title="Retry" icon="refresh" onPress={onRetry} testID="retry-btn" style={{ marginTop: 18 }} />
+      {onBack ? <Button title="Go back" variant="ghost" onPress={onBack} style={{ marginTop: 6 }} /> : null}
+    </View>
+  );
+}
+
 export function SectionTitle({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) {
   return (
     <View style={styles.sectionTitle}>

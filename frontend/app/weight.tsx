@@ -1,37 +1,74 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, Dimensions, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, Dimensions, RefreshControl, TouchableOpacity } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, EmptyState, SectionTitle } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, EmptyState, SectionTitle, Loader, ErrorState } from "@/src/components/ui";
 import { LineChart } from "@/src/components/charts";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage, isPositiveNumber, isNonNegativeNumber } from "@/src/utils/validate";
 
 const { width } = Dimensions.get("window");
 
 export default function Weight() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [data, setData] = useState<any>({ logs: [] });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [weight, setWeight] = useState("");
   const [waist, setWaist] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => { setData(await api("/weight")); }, []);
+  const load = useCallback(async () => {
+    try {
+      setError(false);
+      setData(await api("/weight"));
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const save = async () => {
-    if (!weight) return;
+    if (!weight.trim()) { toast.error("Weight is required."); return; }
+    if (!isPositiveNumber(weight)) { toast.error("Enter a valid weight greater than 0."); return; }
+    if (waist.trim() && !isNonNegativeNumber(waist)) { toast.error("Waist must be a valid number."); return; }
     setSaving(true);
     try {
       await api("/weight", { method: "POST", body: { weight: parseFloat(weight), waist: parseFloat(waist) || null } });
+      toast.success("Weight logged.");
       setSheet(false); setWeight(""); setWaist(""); load();
-    } catch (e: any) { Alert.alert("Error", e.message); } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't save weight."));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const remove = async (id: string) => { await api(`/weight/${id}`, { method: "DELETE" }); load(); };
+  const remove = async (id: string) => {
+    const ok = await confirmAsync("Delete entry?", "This weight entry will be permanently removed.");
+    if (!ok) return;
+    try {
+      await api(`/weight/${id}`, { method: "DELETE" });
+      toast.success("Entry deleted.");
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't delete entry."));
+    }
+  };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
 
   const logs = data.logs || [];
   const chartData = logs.map((l: any) => l.weight);
@@ -39,7 +76,11 @@ export default function Weight() {
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+      >
         <ScreenHeader title="Weight" onBack={() => router.back()} right={<IconButton icon="add" bg={colors.accent} color="#fff" onPress={() => setSheet(true)} testID="add-weight-btn" />} />
 
         <Card>
@@ -73,7 +114,9 @@ export default function Weight() {
                 <AppText weight="bold" style={{ fontSize: 16 }}>{l.weight} kg{l.waist ? `  ·  ${l.waist}cm waist` : ""}</AppText>
                 <AppText style={{ color: colors.textTertiary, fontSize: 12 }}>{l.date}</AppText>
               </View>
-              <Ionicons name="trash-outline" size={18} color={colors.textTertiary} onPress={() => remove(l.id)} />
+              <TouchableOpacity onPress={() => remove(l.id)} style={styles.delBtn} testID={`delete-weight-${l.id}`}>
+                <Ionicons name="trash-outline" size={18} color={colors.textTertiary} />
+              </TouchableOpacity>
             </Card>
           ))
         )}
@@ -91,4 +134,5 @@ export default function Weight() {
 const styles = StyleSheet.create({
   trendBadge: { flexDirection: "row", alignItems: "center", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999 },
   row: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
+  delBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
 });

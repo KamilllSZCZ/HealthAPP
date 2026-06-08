@@ -1,26 +1,43 @@
 import { useCallback, useState, useMemo } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, EmptyState } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, EmptyState, Loader, ErrorState } from "@/src/components/ui";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage } from "@/src/utils/validate";
 
 const TAGS = ["Daily", "Reflection", "Health", "Work", "Personal"];
 
 export default function Journal() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [entries, setEntries] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [form, setForm] = useState<any>({ title: "", content: "", tags: [] as string[] });
   const [editing, setEditing] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => { setEntries(await api("/journal")); }, []);
+  const load = useCallback(async () => {
+    try {
+      setError(false);
+      setEntries(await api("/journal"));
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const openNew = () => { setForm({ title: "", content: "", tags: [] }); setEditing(null); setSheet(true); };
   const openEdit = (e: any) => { setForm({ title: e.title, content: e.content, tags: e.tags || [] }); setEditing(e.id); setSheet(true); };
@@ -30,20 +47,31 @@ export default function Journal() {
   };
 
   const save = async () => {
-    if (!form.title.trim() && !form.content.trim()) return;
+    if (!form.title.trim() && !form.content.trim()) { toast.error("Add a title or some content first."); return; }
     setSaving(true);
     const payload = { ...form, date: new Date().toISOString().slice(0, 10) };
     try {
       if (editing) await api(`/journal/${editing}`, { method: "PUT", body: payload });
       else await api("/journal", { method: "POST", body: payload });
+      toast.success(editing ? "Entry updated." : "Entry saved.");
       setSheet(false); load();
-    } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't save entry."));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const remove = (id: string) => {
-    const doIt = async () => { await api(`/journal/${id}`, { method: "DELETE" }); setSheet(false); load(); };
-    if (Platform.OS === "web") doIt();
-    else Alert.alert("Delete entry?", "", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: doIt }]);
+  const remove = async (id: string) => {
+    const ok = await confirmAsync("Delete entry?", "This journal entry will be permanently removed.");
+    if (!ok) return;
+    try {
+      await api(`/journal/${id}`, { method: "DELETE" });
+      toast.success("Entry deleted.");
+      setSheet(false); load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't delete entry."));
+    }
   };
 
   const filtered = useMemo(() => {
@@ -53,9 +81,16 @@ export default function Journal() {
     );
   }, [entries, search]);
 
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
+
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+      >
         <ScreenHeader title="Journal" onBack={() => router.back()} right={<IconButton icon="add" bg={colors.blue} color="#fff" onPress={openNew} testID="add-journal-btn" />} />
 
         <View style={styles.searchBox}>
@@ -97,7 +132,7 @@ export default function Journal() {
           ))}
         </View>
         <Button title={editing ? "Save" : "Add Entry"} onPress={save} loading={saving} testID="save-journal-btn" />
-        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} />}
+        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} testID="delete-journal-btn" />}
       </Sheet>
     </View>
   );

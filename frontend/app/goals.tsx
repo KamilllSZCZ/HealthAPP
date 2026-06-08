@@ -1,11 +1,14 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, Pill, EmptyState } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, Pill, EmptyState, Loader, ErrorState } from "@/src/components/ui";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage, clampPercent } from "@/src/utils/validate";
 
 const TYPES = ["Weight", "Health", "Nutrition", "Habit", "Hydration", "Supplement", "Personal"];
 const empty = { name: "", description: "", type: "Personal", target_date: "", progress: 0, status: "active" };
@@ -13,44 +16,82 @@ const empty = { name: "", description: "", type: "Personal", target_date: "", pr
 export default function Goals() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [goals, setGoals] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [form, setForm] = useState<any>(empty);
   const [editing, setEditing] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const load = useCallback(async () => { setGoals(await api("/goals")); }, []);
+  const load = useCallback(async () => {
+    try {
+      setError(false);
+      setGoals(await api("/goals"));
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const openNew = () => { setForm(empty); setEditing(null); setSheet(true); };
   const openEdit = (g: any) => { setForm({ ...empty, ...g, progress: g.progress || 0 }); setEditing(g.id); setSheet(true); };
 
   const save = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) { toast.error("Goal name is required."); return; }
+    const rawProgress = Number(form.progress);
+    if (form.progress !== "" && form.progress != null && isNaN(rawProgress)) { toast.error("Progress must be a number between 0 and 100."); return; }
     setSaving(true);
-    const payload = { ...form, progress: Number(form.progress) || 0, start_date: form.start_date || new Date().toISOString().slice(0, 10) };
+    const payload = { ...form, progress: clampPercent(rawProgress || 0), start_date: form.start_date || new Date().toISOString().slice(0, 10) };
     try {
       if (editing) await api(`/goals/${editing}`, { method: "PUT", body: payload });
       else await api("/goals", { method: "POST", body: payload });
+      toast.success(editing ? "Goal updated." : "Goal created.");
       setSheet(false); load();
-    } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't save goal."));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const setProgress = async (g: any, delta: number) => {
-    const np = Math.max(0, Math.min(100, (g.progress || 0) + delta));
-    await api(`/goals/${g.id}`, { method: "PUT", body: { progress: np, status: np >= 100 ? "completed" : "active" } });
-    load();
+    const np = clampPercent((g.progress || 0) + delta);
+    try {
+      await api(`/goals/${g.id}`, { method: "PUT", body: { progress: np, status: np >= 100 ? "completed" : "active" } });
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't update progress."));
+    }
   };
 
-  const remove = (id: string) => {
-    const doIt = async () => { await api(`/goals/${id}`, { method: "DELETE" }); setSheet(false); load(); };
-    if (Platform.OS === "web") doIt();
-    else Alert.alert("Delete goal?", "", [{ text: "Cancel", style: "cancel" }, { text: "Delete", style: "destructive", onPress: doIt }]);
+  const remove = async (id: string) => {
+    const ok = await confirmAsync("Delete goal?", "This goal and its progress will be permanently removed.");
+    if (!ok) return;
+    try {
+      await api(`/goals/${id}`, { method: "DELETE" });
+      toast.success("Goal deleted.");
+      setSheet(false); load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't delete goal."));
+    }
   };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+      >
         <ScreenHeader title="Goals" onBack={() => router.back()} right={<IconButton icon="add" bg={colors.pink} color="#fff" onPress={openNew} testID="add-goal-btn" />} />
 
         {goals.length === 0 ? (
@@ -94,7 +135,7 @@ export default function Goals() {
         <Field label="Target Date" placeholder="YYYY-MM-DD" value={form.target_date} onChangeText={(v: string) => setForm({ ...form, target_date: v })} />
         <Field label="Progress (%)" placeholder="0" keyboardType="number-pad" value={String(form.progress)} onChangeText={(v: string) => setForm({ ...form, progress: v })} />
         <Button title={editing ? "Save Changes" : "Create Goal"} onPress={save} loading={saving} testID="save-goal-btn" />
-        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} />}
+        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} testID="delete-goal-btn" />}
       </Sheet>
     </View>
   );

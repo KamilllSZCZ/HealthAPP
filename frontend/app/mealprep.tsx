@@ -1,40 +1,53 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, SegmentedControl, EmptyState } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, IconButton, SegmentedControl, EmptyState, Loader, ErrorState } from "@/src/components/ui";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage } from "@/src/utils/validate";
 
 type Ingredient = { name: string; quantity: string; unit: string };
 
 export default function MealPrep() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const [tab, setTab] = useState("recipes");
   const [recipes, setRecipes] = useState<any[]>([]);
   const [batches, setBatches] = useState<any[]>([]);
   const [shopping, setShopping] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
-  // recipe form
   const [recipeSheet, setRecipeSheet] = useState(false);
   const [rForm, setRForm] = useState<any>({ name: "", calories: "", protein: "", carbs: "", fat: "", fiber: "", total_cost: "" });
   const [ingredients, setIngredients] = useState<Ingredient[]>([{ name: "", quantity: "", unit: "g" }]);
 
-  // batch form
   const [batchSheet, setBatchSheet] = useState(false);
   const [bForm, setBForm] = useState<any>({ name: "", total_servings: "4", total_cost: "", calories_per_serving: "", protein_per_serving: "", carbs_per_serving: "", fat_per_serving: "", expiration_date: "" });
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
-    const [r, b, s] = await Promise.all([api("/recipes"), api("/meal-prep"), api("/shopping-list")]);
-    setRecipes(r); setBatches(b); setShopping(s);
+    try {
+      setError(false);
+      const [r, b, s] = await Promise.all([api("/recipes"), api("/meal-prep"), api("/shopping-list")]);
+      setRecipes(r); setBatches(b); setShopping(s);
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
   }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
+  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
 
   const saveRecipe = async () => {
-    if (!rForm.name.trim()) return;
+    if (!rForm.name.trim()) { toast.error("Recipe name is required."); return; }
     setSaving(true);
     const payload = {
       name: rForm.name,
@@ -45,15 +58,20 @@ export default function MealPrep() {
     };
     try {
       await api("/recipes", { method: "POST", body: payload });
+      toast.success("Recipe saved.");
       setRecipeSheet(false);
       setRForm({ name: "", calories: "", protein: "", carbs: "", fat: "", fiber: "", total_cost: "" });
       setIngredients([{ name: "", quantity: "", unit: "g" }]);
       load();
-    } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't save recipe."));
+    } finally {
+      setSaving(false);
+    }
   };
 
   const saveBatch = async () => {
-    if (!bForm.name.trim()) return;
+    if (!bForm.name.trim()) { toast.error("Batch name is required."); return; }
     setSaving(true);
     const payload = {
       name: bForm.name, total_servings: parseInt(bForm.total_servings) || 1,
@@ -66,33 +84,71 @@ export default function MealPrep() {
     };
     try {
       await api("/meal-prep", { method: "POST", body: payload });
+      toast.success("Batch saved.");
       setBatchSheet(false);
       setBForm({ name: "", total_servings: "4", total_cost: "", calories_per_serving: "", protein_per_serving: "", carbs_per_serving: "", fat_per_serving: "", expiration_date: "" });
       load();
-    } finally { setSaving(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't save batch."));
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const consume = async (id: string) => { await api(`/meal-prep/${id}/consume`, { method: "POST" }); load(); };
-  const deleteBatch = async (id: string) => { await api(`/meal-prep/${id}`, { method: "DELETE" }); load(); };
-  const deleteRecipe = async (id: string) => { await api(`/recipes/${id}`, { method: "DELETE" }); load(); };
+  const consume = async (id: string) => {
+    try { await api(`/meal-prep/${id}/consume`, { method: "POST" }); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't update batch.")); }
+  };
+
+  const deleteBatch = async (id: string) => {
+    const ok = await confirmAsync("Delete batch?", "This meal-prep batch will be permanently removed.");
+    if (!ok) return;
+    try { await api(`/meal-prep/${id}`, { method: "DELETE" }); toast.success("Batch deleted."); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't delete batch.")); }
+  };
+
+  const deleteRecipe = async (id: string) => {
+    const ok = await confirmAsync("Delete recipe?", "This recipe will be permanently removed.");
+    if (!ok) return;
+    try { await api(`/recipes/${id}`, { method: "DELETE" }); toast.success("Recipe deleted."); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't delete recipe.")); }
+  };
 
   const genShopping = async () => {
-    if (recipes.length === 0) { Alert.alert("No recipes", "Create a recipe with ingredients first."); return; }
-    await api("/shopping-list/generate", { method: "POST", body: { name: "Weekly Shopping", recipe_ids: recipes.map((r) => r.id) } });
-    setTab("shopping");
-    load();
+    if (recipes.length === 0) { toast.error("Create a recipe with ingredients first."); return; }
+    try {
+      await api("/shopping-list/generate", { method: "POST", body: { name: "Weekly Shopping", recipe_ids: recipes.map((r) => r.id) } });
+      toast.success("Shopping list generated.");
+      setTab("shopping");
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't generate shopping list."));
+    }
   };
 
   const toggleShopItem = async (list: any, idx: number) => {
     const items = list.items.map((it: any, i: number) => (i === idx ? { ...it, checked: !it.checked } : it));
-    await api(`/shopping-list/${list.id}`, { method: "PUT", body: { items } });
-    load();
+    try { await api(`/shopping-list/${list.id}`, { method: "PUT", body: { items } }); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't update list.")); }
   };
-  const deleteList = async (id: string) => { await api(`/shopping-list/${id}`, { method: "DELETE" }); load(); };
+
+  const deleteList = async (id: string) => {
+    const ok = await confirmAsync("Delete list?", "This shopping list will be permanently removed.");
+    if (!ok) return;
+    try { await api(`/shopping-list/${id}`, { method: "DELETE" }); toast.success("List deleted."); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't delete list.")); }
+  };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
-      <ScrollView contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={{ paddingTop: insets.top + 12, paddingHorizontal: 16, paddingBottom: 40 }}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.accent} />}
+      >
         <ScreenHeader title="Meal Prep" onBack={() => router.back()} />
         <View style={{ marginBottom: 16 }}>
           <SegmentedControl
@@ -109,7 +165,7 @@ export default function MealPrep() {
                 <Card key={r.id} style={{ marginBottom: 10 }} testID={`recipe-${r.id}`}>
                   <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
                     <AppText weight="bold" style={{ fontSize: 16, flex: 1 }}>{r.name}</AppText>
-                    <TouchableOpacity onPress={() => deleteRecipe(r.id)}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteRecipe(r.id)} style={styles.delBtn} testID={`delete-recipe-${r.id}`}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
                   </View>
                   <AppText style={{ color: colors.textSecondary, fontSize: 13, marginTop: 4 }}>
                     {Math.round(r.calories)} kcal · P{Math.round(r.protein)} C{Math.round(r.carbs)} F{Math.round(r.fat)} · ${r.total_cost}
@@ -144,7 +200,7 @@ export default function MealPrep() {
                   </View>
                   <View style={{ flexDirection: "row", gap: 8, marginTop: 12 }}>
                     <Button title="Eat a portion" variant="secondary" onPress={() => consume(b.id)} style={{ flex: 1 }} testID={`consume-${b.id}`} />
-                    <TouchableOpacity onPress={() => deleteBatch(b.id)} style={styles.delBtn}><Ionicons name="trash-outline" size={18} color={colors.danger} /></TouchableOpacity>
+                    <TouchableOpacity onPress={() => deleteBatch(b.id)} style={styles.delBtnBig} testID={`delete-batch-${b.id}`}><Ionicons name="trash-outline" size={18} color={colors.danger} /></TouchableOpacity>
                   </View>
                 </Card>
               ))}
@@ -157,7 +213,7 @@ export default function MealPrep() {
               <Card key={list.id} style={{ marginBottom: 12 }} testID={`shopping-${list.id}`}>
                 <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 8 }}>
                   <AppText weight="bold" style={{ fontSize: 16 }}>{list.name}</AppText>
-                  <TouchableOpacity onPress={() => deleteList(list.id)}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
+                  <TouchableOpacity onPress={() => deleteList(list.id)} style={styles.delBtn} testID={`delete-list-${list.id}`}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
                 </View>
                 {(list.items || []).map((it: any, i: number) => (
                   <TouchableOpacity key={i} style={styles.shopRow} onPress={() => toggleShopItem(list, i)} testID={`shop-item-${list.id}-${i}`}>
@@ -172,7 +228,6 @@ export default function MealPrep() {
         )}
       </ScrollView>
 
-      {/* Recipe sheet */}
       <Sheet visible={recipeSheet} onClose={() => setRecipeSheet(false)} title="New Recipe">
         <Field label="Recipe Name" placeholder="Chili Con Carne" value={rForm.name} onChangeText={(v: string) => setRForm({ ...rForm, name: v })} testID="recipe-name" />
         <AppText style={styles.lbl}>Ingredients</AppText>
@@ -199,7 +254,6 @@ export default function MealPrep() {
         <Button title="Save Recipe" onPress={saveRecipe} loading={saving} testID="save-recipe-btn" />
       </Sheet>
 
-      {/* Batch sheet */}
       <Sheet visible={batchSheet} onClose={() => setBatchSheet(false)} title="New Batch">
         <Field label="Batch Name" placeholder="Chicken & Rice" value={bForm.name} onChangeText={(v: string) => setBForm({ ...bForm, name: v })} testID="batch-name" />
         <View style={{ flexDirection: "row", gap: 10 }}>
@@ -219,7 +273,8 @@ export default function MealPrep() {
 
 const styles = StyleSheet.create({
   servBadge: { alignItems: "center", marginLeft: 12 },
-  delBtn: { width: 50, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger + "44", alignItems: "center", justifyContent: "center" },
+  delBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  delBtnBig: { width: 50, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger + "44", alignItems: "center", justifyContent: "center" },
   shopRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8 },
   lbl: { fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: colors.textTertiary, marginBottom: 8 },
   addIng: { flexDirection: "row", alignItems: "center", marginBottom: 14, marginTop: 2 },

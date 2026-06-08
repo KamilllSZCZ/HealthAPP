@@ -1,35 +1,70 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, Switch, Platform, Alert } from "react-native";
+import { View, StyleSheet, ScrollView, TouchableOpacity, Switch, Platform } from "react-native";
 import { useRouter, useFocusEffect } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useAuth } from "@/src/auth";
-import { api, getToken } from "@/src/api";
+import { api } from "@/src/api";
 import { colors, radius } from "@/src/theme";
-import { AppText, Card, ScreenHeader, Button, Field, Sheet, SectionTitle, Pill, EmptyState } from "@/src/components/ui";
+import { AppText, Card, ScreenHeader, Button, Field, Sheet, SectionTitle, Pill, EmptyState, Loader, ErrorState } from "@/src/components/ui";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage } from "@/src/utils/validate";
 
 const REMINDER_TYPES = ["Supplements", "Water", "Meals", "Habits", "Weight"];
 
 export default function Settings() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const toast = useToast();
   const { user, logout } = useAuth();
   const [reminders, setReminders] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [form, setForm] = useState<any>({ type: "Supplements", time: "08:00", repeat: "Daily", label: "", enabled: true });
+  const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  const load = useCallback(async () => { setReminders(await api("/notifications")); }, []);
+  const load = useCallback(async () => {
+    try {
+      setError(false);
+      setReminders(await api("/notifications"));
+    } catch (e) {
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const saveReminder = async () => {
-    await api("/notifications", { method: "POST", body: form });
-    setSheet(false);
-    setForm({ type: "Supplements", time: "08:00", repeat: "Daily", label: "", enabled: true });
-    load();
+    if (!form.time.trim()) { toast.error("Reminder time is required."); return; }
+    setSaving(true);
+    try {
+      await api("/notifications", { method: "POST", body: form });
+      toast.success("Reminder added.");
+      setSheet(false);
+      setForm({ type: "Supplements", time: "08:00", repeat: "Daily", label: "", enabled: true });
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't add reminder."));
+    } finally {
+      setSaving(false);
+    }
   };
-  const toggleReminder = async (r: any) => { await api(`/notifications/${r.id}`, { method: "PUT", body: { enabled: !r.enabled } }); load(); };
-  const deleteReminder = async (id: string) => { await api(`/notifications/${id}`, { method: "DELETE" }); load(); };
+
+  const toggleReminder = async (r: any) => {
+    try { await api(`/notifications/${r.id}`, { method: "PUT", body: { enabled: !r.enabled } }); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't update reminder.")); }
+  };
+
+  const deleteReminder = async (id: string) => {
+    const ok = await confirmAsync("Delete reminder?", "This reminder will be permanently removed.");
+    if (!ok) return;
+    try { await api(`/notifications/${id}`, { method: "DELETE" }); toast.success("Reminder deleted."); load(); }
+    catch (e: any) { toast.error(errMessage(e, "Couldn't delete reminder.")); }
+  };
 
   const exportData = async (format: "json" | "csv") => {
     setExporting(true);
@@ -40,7 +75,6 @@ export default function Settings() {
         if (format === "json") {
           content = JSON.stringify(data, null, 2); mime = "application/json"; ext = "json";
         } else {
-          // simple CSV of weight logs as example of tabular export
           const rows = ["collection,json"];
           Object.entries(data).forEach(([k, v]) => rows.push(`${k},"${JSON.stringify(v).replace(/"/g, "'")}"`));
           content = rows.join("\n"); mime = "text/csv"; ext = "csv";
@@ -50,13 +84,24 @@ export default function Settings() {
         const a = document.createElement("a");
         a.href = url; a.download = `lifesync-backup.${ext}`; a.click();
         URL.revokeObjectURL(url);
+        toast.success(`Exported as ${format.toUpperCase()}.`);
       } else {
-        Alert.alert("Backup Ready", `Your data has been exported as ${format.toUpperCase()}. On a native build this saves to your device.`);
+        toast.success(`Your data has been exported as ${format.toUpperCase()}.`);
       }
-    } finally { setExporting(false); }
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't export your data."));
+    } finally {
+      setExporting(false);
+    }
   };
 
-  const doLogout = async () => { await logout(); router.replace("/login"); };
+  const doLogout = async () => {
+    try { await logout(); } catch {}
+    router.replace("/login");
+  };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} onBack={() => router.back()} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -81,7 +126,7 @@ export default function Settings() {
                 <AppText style={{ color: colors.textTertiary, fontSize: 12 }}>{r.time} · {r.repeat}</AppText>
               </View>
               <Switch value={!!r.enabled} onValueChange={() => toggleReminder(r)} trackColor={{ true: colors.accent, false: colors.surfaceHover }} thumbColor="#fff" testID={`reminder-toggle-${r.id}`} />
-              <TouchableOpacity onPress={() => deleteReminder(r.id)} style={{ marginLeft: 10 }}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
+              <TouchableOpacity onPress={() => deleteReminder(r.id)} style={styles.delBtn} testID={`delete-reminder-${r.id}`}><Ionicons name="trash-outline" size={18} color={colors.textTertiary} /></TouchableOpacity>
             </Card>
           ))
         )}
@@ -124,7 +169,7 @@ export default function Settings() {
             </View>
           </View>
         </View>
-        <Button title="Add Reminder" onPress={saveReminder} style={{ marginTop: 12 }} testID="save-reminder-btn" />
+        <Button title="Add Reminder" onPress={saveReminder} loading={saving} style={{ marginTop: 12 }} testID="save-reminder-btn" />
       </Sheet>
     </View>
   );
@@ -134,6 +179,7 @@ const styles = StyleSheet.create({
   noteBox: { flexDirection: "row", alignItems: "center", backgroundColor: colors.accentSoft, padding: 12, borderRadius: radius.md, marginBottom: 12 },
   remRow: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   remIcon: { width: 32, height: 32, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  delBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center", marginLeft: 4 },
   accRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingVertical: 4 },
   divider: { height: 1, backgroundColor: colors.border, marginVertical: 10 },
   lbl: { fontSize: 11, letterSpacing: 1.5, textTransform: "uppercase", color: colors.textTertiary, marginBottom: 8 },

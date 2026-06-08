@@ -1,13 +1,16 @@
 import { useCallback, useState } from "react";
-import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Platform, Alert } from "react-native";
-import { useFocusEffect } from "expo-router";
+import { View, StyleSheet, ScrollView, TouchableOpacity, RefreshControl, Platform } from "react-native";
+import { useFocusEffect, useRouter } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, spacing, radius } from "@/src/theme";
-import { AppText, Card, Button, Field, Sheet, Pill, EmptyState, IconButton } from "@/src/components/ui";
+import { AppText, Card, Button, Field, Sheet, Pill, EmptyState, IconButton, Loader, ErrorState } from "@/src/components/ui";
 import { Ring } from "@/src/components/charts";
+import { useToast } from "@/src/components/toast";
+import { confirmAsync } from "@/src/utils/confirm";
+import { errMessage } from "@/src/utils/validate";
 
 const FORMS = ["Capsule", "Tablet", "Powder", "Liquid", "Softgel", "Custom"];
 const CATEGORIES = ["Vitamins", "Minerals", "Adaptogens", "Nootropics", "Performance", "Recovery", "General Health", "Custom"];
@@ -21,8 +24,12 @@ const empty = {
 
 export default function Supplements() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const toast = useToast();
   const [items, setItems] = useState<any[]>([]);
   const [adherence, setAdherence] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [sheet, setSheet] = useState(false);
   const [form, setForm] = useState<any>(empty);
@@ -31,11 +38,14 @@ export default function Supplements() {
 
   const load = useCallback(async () => {
     try {
+      setError(false);
       const [list, adh] = await Promise.all([api("/supplements"), api("/supplements/adherence?days=30")]);
       setItems(list);
       setAdherence(adh);
     } catch (e) {
-      console.warn(e);
+      setError(true);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -58,7 +68,15 @@ export default function Supplements() {
   };
 
   const save = async () => {
-    if (!form.name.trim()) return;
+    if (!form.name.trim()) { toast.error("Supplement name is required."); return; }
+    if (form.daily_servings && (isNaN(parseInt(form.daily_servings)) || parseInt(form.daily_servings) < 1)) {
+      toast.error("Daily servings must be a number of 1 or more."); return;
+    }
+    for (const [k, label] of [["current_stock", "Current stock"], ["refill_threshold", "Refill threshold"], ["purchase_price", "Price"], ["package_size", "Package size"]] as const) {
+      if (form[k] !== "" && form[k] != null && (isNaN(parseFloat(form[k])) || parseFloat(form[k]) < 0)) {
+        toast.error(`${label} must be a valid non-negative number.`); return;
+      }
+    }
     setSaving(true);
     const payload = {
       ...form,
@@ -71,10 +89,11 @@ export default function Supplements() {
     try {
       if (editing) await api(`/supplements/${editing}`, { method: "PUT", body: payload });
       else await api("/supplements", { method: "POST", body: payload });
+      toast.success(editing ? "Supplement updated." : "Supplement added.");
       setSheet(false);
       load();
     } catch (e: any) {
-      Alert.alert("Error", e.message);
+      toast.error(errMessage(e, "Couldn't save supplement."));
     } finally {
       setSaving(false);
     }
@@ -83,19 +102,30 @@ export default function Supplements() {
   const take = async (s: any) => {
     if (Platform.OS !== "web") Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     const done = s.taken_today >= s.taken_count_needed;
-    if (done) await api(`/supplements/${s.id}/untake`, { method: "POST" });
-    else await api(`/supplements/${s.id}/take`, { method: "POST" });
-    load();
+    try {
+      if (done) await api(`/supplements/${s.id}/untake`, { method: "POST" });
+      else await api(`/supplements/${s.id}/take`, { method: "POST" });
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't update intake."));
+    }
   };
 
-  const remove = (id: string) => {
-    const doDelete = async () => { await api(`/supplements/${id}`, { method: "DELETE" }); setSheet(false); load(); };
-    if (Platform.OS === "web") doDelete();
-    else Alert.alert("Delete supplement?", "This removes its history too.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: doDelete },
-    ]);
+  const remove = async (id: string) => {
+    const ok = await confirmAsync("Delete supplement?", "This removes the supplement and its intake history. This can't be undone.");
+    if (!ok) return;
+    try {
+      await api(`/supplements/${id}`, { method: "DELETE" });
+      toast.success("Supplement deleted.");
+      setSheet(false);
+      load();
+    } catch (e: any) {
+      toast.error(errMessage(e, "Couldn't delete supplement."));
+    }
   };
+
+  if (loading) return <Loader />;
+  if (error) return <ErrorState onRetry={() => { setError(false); setLoading(true); load(); }} />;
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
@@ -109,7 +139,6 @@ export default function Supplements() {
           <IconButton icon="add" bg={colors.accent} color="#fff" onPress={openNew} testID="add-supplement-btn" />
         </View>
 
-        {/* Adherence summary */}
         <Card style={styles.summary} testID="supplement-adherence">
           <Ring size={92} stroke={9} progress={(adherence?.overall_percent ?? 0) / 100} color={colors.accent}>
             <AppText weight="headingExtra" style={{ fontSize: 22 }}>{adherence?.overall_percent ?? 0}%</AppText>
@@ -208,7 +237,7 @@ export default function Supplements() {
         </View>
         <Field label="Notes" placeholder="Optional notes" value={form.notes} onChangeText={(v: string) => setForm({ ...form, notes: v })} multiline />
         <Button title={editing ? "Save Changes" : "Add Supplement"} onPress={save} loading={saving} testID="save-supplement-btn" />
-        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} />}
+        {editing && <Button title="Delete" variant="ghost" onPress={() => remove(editing)} style={{ marginTop: 8 }} testID="delete-supplement-btn" />}
       </Sheet>
     </View>
   );
