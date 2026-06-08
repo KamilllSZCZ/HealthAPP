@@ -5,7 +5,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { api } from "@/src/api";
 import { colors, radius, metricColors } from "@/src/theme";
-import { AppText, Card, Button, SegmentedControl, SectionTitle, EmptyState } from "@/src/components/ui";
+import { AppText, Card, SegmentedControl, SectionTitle } from "@/src/components/ui";
 import { LineChart } from "@/src/components/charts";
 
 const { width } = Dimensions.get("window");
@@ -23,31 +23,28 @@ export default function Analytics() {
   const insets = useSafeAreaInsets();
   const [data, setData] = useState<any>(null);
   const [score, setScore] = useState<any>(null);
-  const [reports, setReports] = useState<any[]>([]);
+  const [report, setReport] = useState<any>(null);
   const [period, setPeriod] = useState("weekly");
-  const [generating, setGenerating] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [activeTrend, setActiveTrend] = useState("energy");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (p: string) => {
     try {
-      const [a, s, r] = await Promise.all([api("/analytics?days=30"), api("/health-score"), api("/ai/reports")]);
+      const [a, s, r] = await Promise.all([
+        api("/analytics?days=30"),
+        api("/health-score"),
+        api(`/stats/report?period=${p}`),
+      ]);
       setData(a);
       setScore(s);
-      setReports(r);
+      setReport(r);
     } catch (e) { console.warn(e); }
   }, []);
 
-  useFocusEffect(useCallback(() => { load(); }, [load]));
-  const onRefresh = async () => { setRefreshing(true); await load(); setRefreshing(false); };
+  useFocusEffect(useCallback(() => { load(period); }, [load, period]));
+  const onRefresh = async () => { setRefreshing(true); await load(period); setRefreshing(false); };
 
-  const generate = async () => {
-    setGenerating(true);
-    try {
-      await api("/ai/report", { method: "POST", body: { period } });
-      await load();
-    } catch (e) { console.warn(e); } finally { setGenerating(false); }
-  };
+  const changePeriod = (p: string) => { setPeriod(p); load(p); };
 
   const trend = data?.trends?.[activeTrend] || [];
   const trendValues = trend.map((p: any) => (typeof p.value === "number" ? p.value : 0));
@@ -121,38 +118,46 @@ export default function Analytics() {
           ))
         )}
 
-        {/* AI Analyst */}
-        <SectionTitle title="AI Personal Analyst" />
-        <Card>
-          <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
-            <View style={styles.aiBadge}><Ionicons name="sparkles" size={18} color={colors.accent} /></View>
-            <AppText style={{ color: colors.textSecondary, fontSize: 13, flex: 1, marginLeft: 12 }}>
-              Generate an AI-written report analyzing your trends and behavior patterns.
-            </AppText>
-          </View>
-          <View style={{ marginBottom: 12 }}>
-            <SegmentedControl
-              options={[{ label: "Weekly", value: "weekly" }, { label: "Monthly", value: "monthly" }]}
-              value={period}
-              onChange={setPeriod}
-              testID="ai-period"
-            />
-          </View>
-          <Button title={generating ? "Analyzing..." : "Generate Report"} icon="sparkles" onPress={generate} loading={generating} testID="generate-ai-btn" />
-        </Card>
-
-        {reports.map((r) => (
-          <Card key={r.id} style={{ marginTop: 10 }} testID={`ai-report-${r.id}`}>
-            <View style={{ flexDirection: "row", justifyContent: "space-between", marginBottom: 8 }}>
-              <AppText weight="bold" style={{ color: colors.accent, fontSize: 12, textTransform: "uppercase" }}>{r.period} report</AppText>
-              <AppText style={{ color: colors.textTertiary, fontSize: 11 }}>{new Date(r.created_at).toLocaleDateString()}</AppText>
+        {/* Rule-based summary */}
+        <SectionTitle title="Your Summary" />
+        <View style={{ marginBottom: 12 }}>
+          <SegmentedControl
+            options={[{ label: "Weekly", value: "weekly" }, { label: "Monthly", value: "monthly" }]}
+            value={period}
+            onChange={changePeriod}
+            testID="stats-period"
+          />
+        </View>
+        <Card testID="stats-report-card">
+          <AppText style={{ color: colors.textSecondary, fontSize: 14, lineHeight: 21 }}>{report?.summary}</AppText>
+          {(report?.highlights || []).length > 0 && (
+            <View style={{ marginTop: 14, gap: 12 }}>
+              {report.highlights.map((h: any, i: number) => (
+                <View key={i} style={styles.highlightRow} testID={`stat-highlight-${i}`}>
+                  <View style={[styles.highlightIcon, { backgroundColor: toneColor(h.tone) + "22" }]}>
+                    <Ionicons name={h.icon} size={16} color={toneColor(h.tone)} />
+                  </View>
+                  <AppText style={{ color: colors.textSecondary, fontSize: 13, flex: 1, lineHeight: 19 }}>{h.text}</AppText>
+                </View>
+              ))}
             </View>
-            <AppText style={{ color: colors.textSecondary, fontSize: 14, lineHeight: 21 }}>{r.content}</AppText>
-          </Card>
-        ))}
+          )}
+          {report?.suggestion ? (
+            <View style={styles.suggestion}>
+              <Ionicons name="bulb" size={15} color={colors.warning} />
+              <AppText style={{ color: colors.textSecondary, fontSize: 13, marginLeft: 8, flex: 1 }}>{report.suggestion}</AppText>
+            </View>
+          ) : null}
+        </Card>
       </ScrollView>
     </View>
   );
+}
+
+function toneColor(tone?: string) {
+  if (tone === "good") return colors.success;
+  if (tone === "warn") return colors.warning;
+  return colors.blue;
 }
 
 function scoreColor(v?: number) {
@@ -176,5 +181,6 @@ const styles = StyleSheet.create({
   trendTab: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
   insight: { flexDirection: "row", alignItems: "center", marginBottom: 8 },
   corrBadge: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center" },
-  aiBadge: { width: 40, height: 40, borderRadius: 12, backgroundColor: colors.accentSoft, alignItems: "center", justifyContent: "center" },
+  highlightRow: { flexDirection: "row", alignItems: "center" },
+  highlightIcon: { width: 32, height: 32, borderRadius: 10, alignItems: "center", justifyContent: "center", marginRight: 12 },
 });

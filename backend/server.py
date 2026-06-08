@@ -1,7 +1,7 @@
 """LifeSync backend — personal life/health management platform.
 
 Single-user-focused but fully multi-device-sync capable. All data is user-scoped.
-Auth: email/password (JWT) + Emergent Google session tokens. AI: GPT-5.2.
+Auth: email/password (JWT) + Emergent Google session tokens. Rule-based stats only.
 """
 import os
 import uuid
@@ -29,7 +29,6 @@ db = client[os.environ["DB_NAME"]]
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "dev_secret")
 JWT_ALGO = "HS256"
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
 
 app = FastAPI(title="LifeSync API")
 api = APIRouter(prefix="/api")
@@ -1186,8 +1185,8 @@ async def run_sync(user: dict = Depends(get_current_user)):
     return {"ok": True, "synced": results}
 
 
-# ----------------------------- AI ANALYST (GPT-5.2) -----------------------------
-async def gather_ai_context(uid: str, days: int = 30) -> dict:
+# ----------------------------- RULE-BASED STATS REPORT -----------------------------
+async def gather_stats_context(uid: str, days: int = 30) -> dict:
     start = date.today() - timedelta(days=days - 1)
     s = start.isoformat()
     metrics = await db.daily_metrics.find({"user_id": uid, "date": {"$gte": s}}, {"_id": 0}).to_list(5000)
@@ -1200,9 +1199,6 @@ async def gather_ai_context(uid: str, days: int = 30) -> dict:
     water_by_date: Dict[str, int] = {}
     for w in water:
         water_by_date[w["date"]] = water_by_date.get(w["date"], 0) + w["amount"]
-    sup_by_date: Dict[str, int] = {}
-    for lg in suplogs:
-        sup_by_date[lg["date"]] = sup_by_date.get(lg["date"], 0) + 1
     # weekend miss detection
     weekend_logs = sum(1 for lg in suplogs if datetime.fromisoformat(lg["date"]).weekday() >= 5)
     weekday_logs = len(suplogs) - weekend_logs
@@ -1223,60 +1219,68 @@ async def gather_ai_context(uid: str, days: int = 30) -> dict:
     }
 
 
-@api.post("/ai/report")
-async def ai_report(body: Dict[str, Any], user: dict = Depends(get_current_user)):
-    period = body.get("period", "weekly")
-    days = 7 if period == "weekly" else 30
-    ctx = await gather_ai_context(user["user_id"], days)
-    try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=f"analyst_{user['user_id']}_{period}",
-            system_message=(
-                "You are LifeSync's AI Personal Analyst. You analyze a single user's "
-                "health, supplementation, hydration, nutrition, sleep and mood data and "
-                "produce concise, motivating, plain-language insights. Use specific numbers "
-                "from the data. Identify trends, correlations and behavioral patterns "
-                "(e.g. weekend supplement misses). NEVER give medical diagnoses or "
-                "prescribe treatment. Keep it under 220 words. Use short paragraphs and "
-                "2-4 bullet-point insights."
-            ),
-        ).with_model("openai", "gpt-5.2")
-        prompt = (
-            f"Here is the user's last {days} days of data (JSON):\n{ctx}\n\n"
-            f"Write a {period} report with: 1) a one-line summary, 2) 2-4 specific insights "
-            f"referencing the numbers, 3) one gentle suggestion. Be encouraging."
-        )
-        text = await chat.send_message(UserMessage(text=prompt))
-    except Exception:
-        logger.exception("AI report failed")
-        text = _fallback_report(ctx, period)
-    doc = {"id": new_id("air_"), "user_id": user["user_id"], "period": period,
-           "content": text, "context": ctx, "created_at": now_utc().isoformat()}
-    await db.ai_reports.insert_one(dict(doc))
-    return clean(doc)
-
-
-def _fallback_report(ctx: dict, period: str) -> str:
-    lines = [f"Your {period} summary:"]
-    if ctx.get("avg_sleep"):
-        lines.append(f"- You averaged {ctx['avg_sleep']}h of sleep.")
-    if ctx.get("avg_water"):
-        lines.append(f"- Average hydration was {ctx['avg_water']}ml/day.")
-    if ctx.get("weekend_supplement_logs") is not None and ctx.get("weekday_supplement_logs"):
+def _build_stat_lines(ctx: dict) -> List[dict]:
+    """Pure rule-based highlights derived from aggregated metrics."""
+    out: List[dict] = []
+    if ctx.get("avg_sleep") is not None:
+        good = ctx["avg_sleep"] >= 7
+        out.append({"icon": "moon", "tone": "good" if good else "warn",
+                    "text": f"Averaged {ctx['avg_sleep']}h of sleep" + ("" if good else " — aim for 7-9h")})
+    if ctx.get("avg_water") is not None:
+        out.append({"icon": "water", "tone": "info",
+                    "text": f"Average hydration was {ctx['avg_water']}ml/day"})
+    if ctx.get("weekday_supplement_logs") and ctx.get("weekend_supplement_logs") is not None:
         if ctx["weekend_supplement_logs"] < ctx["weekday_supplement_logs"] / 2.5:
-            lines.append("- You tend to miss supplements more on weekends.")
-    if ctx.get("avg_energy") and ctx.get("avg_mood"):
-        lines.append(f"- Energy averaged {ctx['avg_energy']}/10 and mood {ctx['avg_mood']}/10.")
-    lines.append("Keep logging daily for sharper insights.")
-    return "\n".join(lines)
+            out.append({"icon": "alert-circle", "tone": "warn",
+                        "text": "You tend to miss supplements more on weekends"})
+        else:
+            out.append({"icon": "checkmark-circle", "tone": "good",
+                        "text": "Supplement intake is consistent across the week"})
+    if ctx.get("avg_energy") is not None and ctx.get("avg_mood") is not None:
+        out.append({"icon": "flash", "tone": "info",
+                    "text": f"Energy averaged {ctx['avg_energy']}/10 and mood {ctx['avg_mood']}/10"})
+    if ctx.get("weight_start") is not None and ctx.get("weight_current") is not None:
+        delta = round(ctx["weight_current"] - ctx["weight_start"], 1)
+        if abs(delta) >= 0.1:
+            arrow = "trending-down" if delta < 0 else "trending-up"
+            out.append({"icon": arrow, "tone": "info",
+                        "text": f"Weight changed by {delta:+}kg over the tracked period"})
+    if ctx.get("avg_calories") is not None:
+        out.append({"icon": "restaurant", "tone": "info",
+                    "text": f"Logged ~{ctx['avg_calories']} kcal/day across {ctx['meals_logged']} meals"})
+    return out
 
 
-@api.get("/ai/reports")
-async def list_ai_reports(user: dict = Depends(get_current_user)):
-    items = await db.ai_reports.find({"user_id": user["user_id"]}, {"_id": 0, "context": 0}).sort("created_at", -1).to_list(50)
-    return items
+def _build_suggestion(ctx: dict) -> str:
+    if ctx.get("avg_sleep") is not None and ctx["avg_sleep"] < 7:
+        return "Try winding down 30 minutes earlier to push sleep toward 7-9 hours."
+    if ctx.get("avg_water") is not None and ctx["avg_water"] < 2000:
+        return "Add one more glass of water mid-afternoon to lift your daily hydration."
+    if ctx.get("weekday_supplement_logs") and ctx.get("weekend_supplement_logs", 0) < ctx["weekday_supplement_logs"] / 2.5:
+        return "Set a weekend reminder so your supplement streak stays unbroken."
+    return "You're trending well — keep logging daily to sharpen these stats."
+
+
+@api.get("/stats/report")
+async def stats_report(period: str = "weekly", user: dict = Depends(get_current_user)):
+    days = 7 if period == "weekly" else 30
+    ctx = await gather_stats_context(user["user_id"], days)
+    lines = _build_stat_lines(ctx)
+    has_data = bool(lines) or ctx.get("supplement_logs_total", 0) > 0 or ctx.get("meals_logged", 0) > 0
+    summary = (
+        f"Here's your {period} snapshot based on the last {days} days of tracking."
+        if has_data else
+        "Not enough data yet — log a few days of sleep, water, supplements and metrics to see your stats."
+    )
+    return {
+        "period": period,
+        "days": days,
+        "summary": summary,
+        "highlights": lines,
+        "suggestion": _build_suggestion(ctx) if has_data else None,
+        "metrics": ctx,
+        "generated_at": now_utc().isoformat(),
+    }
 
 
 # ----------------------------- EXPORT -----------------------------
@@ -1287,7 +1291,7 @@ async def export_data(user: dict = Depends(get_current_user)):
                    "meal_prep_batches", "shopping_lists", "water_logs", "weight_logs",
                    "sleep_logs", "daily_metrics", "goals", "habits", "habit_logs",
                    "projects", "journal_entries", "weekly_reviews", "health_sync_logs",
-                   "reminder_schedules", "ai_reports"]
+                   "reminder_schedules"]
     data = {}
     for c in collections:
         data[c] = await db[c].find({"user_id": uid}, {"_id": 0}).to_list(100000)

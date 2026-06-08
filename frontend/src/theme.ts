@@ -4,9 +4,9 @@ export const colors = {
   surfaceAlt: "#1F1F22",
   surfaceHover: "#27272A",
   border: "#27272A",
-  accent: "#6B46FF",
-  accentSoft: "rgba(107,70,255,0.16)",
-  accentGlow: "rgba(107,70,255,0.35)",
+  accent: "#10D9A6",
+  accentSoft: "rgba(16,217,166,0.16)",
+  accentGlow: "rgba(16,217,166,0.35)",
   success: "#22C55E",
   successSoft: "rgba(34,197,94,0.14)",
   warning: "#F59E0B",
@@ -49,7 +49,7 @@ export const fonts = {
 
 export const metricColors: Record<string, string> = {
   energy: "#F59E0B",
-  focus: "#6B46FF",
+  focus: "#38BDF8",
   mood: "#EC4899",
   stress: "#EF4444",
   sleep_quality: "#3B82F6",
