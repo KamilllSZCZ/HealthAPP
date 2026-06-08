@@ -1,0 +1,1 @@
+{"dependencies":[],"output":[{"data":{"code":"__d(function (global, require, _$$_IMPORT_DEFAULT, _$$_IMPORT_ALL, module, exports, _dependencyMap) {\n  module.exports = \"/assets/node_modules/@expo-google-fonts/chivo/900Black/Chivo_900Black.cf759d251a8f2aa35712b04d9b264893.ttf\";\n});","lineCount":3,"map":[[3,3]],"functionMap":null,"hasCjsExports":true},"type":"js/module/asset"}]}
